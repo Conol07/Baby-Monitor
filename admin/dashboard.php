@@ -535,6 +535,9 @@ nav { flex: 1; padding: 16px 0; overflow-y: auto; }
     <a class="nav-item" onclick="showSection('analytics')"><i class="fas fa-chart-bar"></i> Analytics</a>
     <a class="nav-item" onclick="showSection('profile')"><i class="fas fa-baby"></i> Baby Profile</a>
     <a class="nav-item" onclick="showSection('settings')"><i class="fas fa-bell"></i> Notifications</a>
+    <a class="nav-item" href="add_babysitter.php">
+    <i class="fas fa-baby"></i> Manage Baby Sitter
+</a>
   </nav>
   <div class="sidebar-footer">
     <a href="../logout.php" class="btn-logout"><i class="fas fa-sign-out-alt"></i> Sign Out</a>
@@ -940,6 +943,8 @@ nav { flex: 1; padding: 16px 0; overflow-y: auto; }
         </div>
       </div>
     </div>
+    <!-- ═══ MANAGE BABY SITTER ═══ -->
+
 
   </div><!-- /content -->
 </div><!-- /main -->
@@ -1243,7 +1248,7 @@ setInterval(() => {
           lastLogId = Math.max(lastLogId, e.id);
         });
       }
-    }).catch(() => {});
+    }).catch(() => {}); 
 }, 10000);
 </script>
 </body>

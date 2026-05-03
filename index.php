@@ -211,18 +211,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     margin-bottom: 36px;
   }
 
-  .demo-box {
-    background: var(--soft);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 14px 18px;
-    margin-bottom: 28px;
-    font-size: 0.82rem;
-    color: var(--muted);
-    line-height: 1.7;
-  }
-  .demo-box strong { color: var(--text); }
-
   .form-group { margin-bottom: 20px; }
   .form-group label {
     display: block;
@@ -289,6 +277,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   }
   .btn-login:active { transform: translateY(0); }
 
+  /* ── NEW: Register button ── */
+  .btn-register {
+    width: 100%;
+    padding: 13px;
+    background: transparent;
+    color: var(--peach);
+    border: 1.5px solid var(--peach);
+    border-radius: 12px;
+    font-size: 0.95rem;
+    font-weight: 500;
+    font-family: 'DM Sans', sans-serif;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, transform 0.15s;
+    letter-spacing: 0.02em;
+    margin-top: 10px;
+    display: block;
+    text-align: center;
+    text-decoration: none;
+  }
+  .btn-register:hover {
+    background: var(--peach);
+    color: #fff;
+    transform: translateY(-1px);
+  }
+  .btn-register:active { transform: translateY(0); }
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 18px 0 8px;
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+  .divider::before, .divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
   .quick-login {
     margin-top: 20px;
     text-align: center;
@@ -328,9 +357,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="panel-left-body">
       <ul class="features-list">
         <li><span class="dot"></span> Real-time sound classification</li>
-        <li><span class="dot"></span> Instant alerts & notifications</li>
-        <li><span class="dot"></span> Activity logs & history</li>
-        <li><span class="dot"></span> Analytics & insights</li>
+        <li><span class="dot"></span> Instant alerts &amp; notifications</li>
+        <li><span class="dot"></span> Activity logs &amp; history</li>
+        <li><span class="dot"></span> Analytics &amp; insights</li>
         <li><span class="dot"></span> Multi-role access control</li>
       </ul>
     </div>
@@ -369,6 +398,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </div>
       <button type="submit" class="btn-login">Sign In →</button>
     </form>
+
+    <div class="divider">or</div>
+    <a href="register_parent.php" class="btn-register">Create a Parent Account</a>
 
     <div class="quick-login">
       <p>Quick login as:</p>
