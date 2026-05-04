@@ -104,6 +104,19 @@ CREATE TABLE feeding_logs (
     FOREIGN KEY (logged_by) REFERENCES users(id)
 );
 
+CREATE TABLE session_logs (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    user_id       INT NOT NULL,
+    session_token VARCHAR(128) NOT NULL,
+    ip_address    VARCHAR(45),
+    user_agent    TEXT,
+    logged_in_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_active   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    logged_out_at DATETIME NULL,
+    status        ENUM('active','ended','expired') DEFAULT 'active',
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
 -- ⚠️ DO NOT add demo users here — passwords must be hashed by PHP on your server.
 -- After importing this SQL, visit: http://localhost/baby-monitor/setup.php
 -- That page will create the demo users with correct bcrypt hashes and seed all data.

@@ -1,9 +1,139 @@
 <?php
 require_once '../includes/config.php';
 requireAdmin();
+$db  = getDB();      // ← must come BEFORE the session helper calls
+$user = currentUser();
+require_once '../includes/session_helper.php';
+touchSessionLog($db);
+expireOldSessions($db, 120);
+// Session logs
+$sessionLogs = $db->prepare("
+    SELECT 
+        sl.id,
+        sl.user_id,
+        sl.session_token,
+        sl.logged_in_at,
+        sl.logged_out_at,
+        sl.status,
+        sl.ip_address,
+        sl.device,
+        u.name AS user_name,
+        u.role
+    FROM session_logs sl
+    LEFT JOIN users u ON sl.user_id = u.id
+    ORDER BY sl.logged_in_at DESC
+    LIMIT 50
+");
+$sessionLogs->execute();
+$sessionLogs = $sessionLogs->fetchAll(PDO::FETCH_ASSOC);
+
+// Session stats
+$sessionStats = $db->prepare("
+    SELECT
+        COALESCE(SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END), 0) AS active_count,
+        COALESCE(COUNT(*), 0) AS total_count,
+        COALESCE(SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END), 0) AS expired_count,
+        SEC_TO_TIME(
+            AVG(
+                TIMESTAMPDIFF(
+                    SECOND,
+                    logged_in_at,
+                    COALESCE(logged_out_at, NOW())
+                )
+            )
+        ) AS avg_duration
+    FROM session_logs
+");
+$sessionStats->execute();
+$sessionStats = $sessionStats->fetch(PDO::FETCH_ASSOC);
 
 $db   = getDB();
 $user = currentUser();
+
+// Babysitter management messages and form state
+$bsErrors = [];
+$bsSuccess = '';
+$bsFormData = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form_action'] ?? '') === 'add_babysitter') {
+    $bsFormData['name'] = trim($_POST['name'] ?? '');
+    $bsFormData['email'] = trim($_POST['email'] ?? '');
+    $bsFormData['phone'] = trim($_POST['phone'] ?? '');
+    $bsFormData['notes'] = trim($_POST['notes'] ?? '');
+    $password = $_POST['password'] ?? '';
+    $confirm = $_POST['confirm_password'] ?? '';
+
+    if ($bsFormData['name'] === '') {
+        $bsErrors['name'] = 'Full name is required.';
+    }
+
+    if ($bsFormData['email'] === '') {
+        $bsErrors['email'] = 'Email is required.';
+    } elseif (!filter_var($bsFormData['email'], FILTER_VALIDATE_EMAIL)) {
+        $bsErrors['email'] = 'Enter a valid email address.';
+    }
+
+    if ($password === '') {
+        $bsErrors['password'] = 'Password is required.';
+    } elseif (strlen($password) < 8) {
+        $bsErrors['password'] = 'Password must be at least 8 characters.';
+    }
+
+    if ($password !== $confirm) {
+        $bsErrors['confirm_password'] = 'Passwords do not match.';
+    }
+
+    if (empty($bsErrors)) {
+        try {
+            $checkStmt = $db->prepare('SELECT id FROM users WHERE email = ? LIMIT 1');
+            $checkStmt->execute([$bsFormData['email']]);
+
+            if ($checkStmt->fetch()) {
+                $bsErrors['email'] = 'A user with this email already exists.';
+            } else {
+                $hashed = password_hash($password, PASSWORD_BCRYPT);
+
+                $insertStmt = $db->prepare('\n                    INSERT INTO users (name, email, password, role, created_at)\n                    VALUES (?, ?, ?, ?, NOW())\n                ');
+                $insertStmt->execute([
+                    $bsFormData['name'],
+                    $bsFormData['email'],
+                    $hashed,
+                    'babysitter'
+                ]);
+
+                $newId = $db->lastInsertId();
+                $db->prepare('INSERT IGNORE INTO notification_preferences (user_id) VALUES (?)')->execute([$newId]);
+
+                $bsSuccess = 'Babysitter account created successfully!';
+                $bsFormData = [];
+            }
+        } catch (PDOException $e) {
+            $bsErrors['db'] = 'Database error: ' . $e->getMessage();
+        }
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['form_action'] ?? '') === 'delete_babysitter') {
+    $deleteId = (int)($_POST['id'] ?? 0);
+
+    if ($deleteId > 0) {
+        try {
+            $deleteStmt = $db->prepare("DELETE FROM users WHERE id = ? AND role = 'babysitter'");
+            $deleteStmt->execute([$deleteId]);
+            $bsSuccess = 'Babysitter account removed successfully.';
+        } catch (PDOException $e) {
+            $bsErrors['db'] = 'Database error: ' . $e->getMessage();
+        }
+    }
+}
+
+$babysitters = [];
+try {
+    $bsStmt = $db->query("SELECT id, name, email, created_at FROM users WHERE role = 'babysitter' ORDER BY created_at DESC");
+    $babysitters = $bsStmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    $bsErrors['db'] = $bsErrors['db'] ?? 'Unable to load babysitter accounts.';
+}
 
 // Fetch baby profile
 $baby = $db->prepare("SELECT bp.*, u.name AS parent_name FROM baby_profiles bp JOIN users u ON bp.parent_id = u.id WHERE bp.parent_id = ? ORDER BY bp.id LIMIT 1");
@@ -509,6 +639,57 @@ nav { flex: 1; padding: 16px 0; overflow-y: auto; }
   display: inline-flex; align-items: center; justify-content: center;
   margin-left: 4px;
 }
+
+
+/* ── Babysitter Management ── */
+.alert {
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 0.86rem;
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.alert-success { background:#f0fdf4; color:#16a34a; border:1px solid #bbf7d0; }
+.alert-error { background:#fff1f1; color:#dc2626; border:1px solid #fecaca; }
+.form-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.form-group { display:flex; flex-direction:column; gap:6px; }
+.form-group.full { grid-column:1 / -1; }
+.form-group label { font-size:0.75rem; font-weight:500; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); }
+.form-group input, .form-group textarea {
+  padding:11px 14px;
+  border:1.5px solid var(--border);
+  border-radius:10px;
+  font-size:0.88rem;
+  font-family:'DM Sans', sans-serif;
+  color:var(--text);
+  background:var(--bg);
+  outline:none;
+  width:100%;
+}
+.form-group input:focus, .form-group textarea:focus { border-color:var(--peach); box-shadow:0 0 0 3px rgba(249,115,22,0.12); }
+.form-group textarea { resize:vertical; min-height:72px; }
+.err-msg { font-size:0.73rem; color:#dc2626; }
+.has-error input { border-color:#dc2626 !important; }
+.pass-wrap { position:relative; }
+.pass-wrap input { padding-right:42px; }
+.eye-btn { position:absolute; right:12px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; color:var(--muted); }
+.form-actions { display:flex; gap:12px; margin-top:22px; justify-content:flex-end; }
+.btn-secondary { padding:10px 22px; background:transparent; border:1.5px solid var(--border); border-radius:10px; color:var(--muted); font-family:'DM Sans',sans-serif; font-size:0.88rem; text-decoration:none; cursor:pointer; }
+.btn-secondary:hover { border-color:var(--peach); color:var(--peach); }
+.bs-table { width:100%; border-collapse:collapse; }
+.bs-table th { font-size:0.72rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted); font-weight:500; padding:10px 12px; text-align:left; border-bottom:1px solid var(--border); }
+.bs-table td { padding:14px 12px; font-size:0.86rem; color:var(--text); border-bottom:1px solid #faf4ef; vertical-align:middle; }
+.bs-table tr:last-child td { border-bottom:none; }
+.bs-avatar { width:32px; height:32px; background:linear-gradient(135deg,var(--peach),var(--peach2)); border-radius:50%; display:inline-flex; align-items:center; justify-content:center; font-size:0.68rem; font-weight:600; color:#fff; margin-right:10px; vertical-align:middle; }
+.bs-name { vertical-align:middle; font-weight:500; }
+.badge-sitter { background:#fff3e0; color:#c2410c; font-size:0.72rem; padding:3px 10px; border-radius:20px; font-weight:500; }
+.btn-delete { background:none; border:1px solid #fecaca; color:#dc2626; padding:5px 12px; border-radius:6px; font-size:0.78rem; cursor:pointer; font-family:'DM Sans',sans-serif; }
+.btn-delete:hover { background:#fff1f1; }
+.empty-state { text-align:center; padding:40px 20px; color:var(--muted); font-size:0.88rem; }
+@media (max-width:768px) { .form-grid { grid-template-columns:1fr; } }
+
 </style>
 </head>
 <body>
@@ -535,9 +716,8 @@ nav { flex: 1; padding: 16px 0; overflow-y: auto; }
     <a class="nav-item" onclick="showSection('analytics')"><i class="fas fa-chart-bar"></i> Analytics</a>
     <a class="nav-item" onclick="showSection('profile')"><i class="fas fa-baby"></i> Baby Profile</a>
     <a class="nav-item" onclick="showSection('settings')"><i class="fas fa-bell"></i> Notifications</a>
-    <a class="nav-item" href="add_babysitter.php">
-    <i class="fas fa-baby"></i> Manage Baby Sitter
-</a>
+    <a class="nav-item" onclick="showSection('babysitters')"><i class="fas fa-baby"></i> Manage Baby Sitter</a>
+    <a class="nav-item" onclick="showSection('sessions')"><i class="fas fa-clock-rotate-left"></i> Session Logs</a>
   </nav>
   <div class="sidebar-footer">
     <a href="../logout.php" class="btn-logout"><i class="fas fa-sign-out-alt"></i> Sign Out</a>
@@ -747,8 +927,316 @@ nav { flex: 1; padding: 16px 0; overflow-y: auto; }
         </div>
       </div>
     </div>
+    <!-- ═══ MANAGE BABYSITTER SECTION ═══ -->
+    <div class="section" id="sec-babysitters">
 
-    <!-- ═══ ANALYTICS SECTION ═══ -->
+      <?php if ($bsSuccess): ?>
+        <div class="alert alert-success">✅ <?= htmlspecialchars($bsSuccess) ?></div>
+      <?php endif; ?>
+
+      <?php if (isset($bsErrors['db'])): ?>
+        <div class="alert alert-error">⚠️ <?= htmlspecialchars($bsErrors['db']) ?></div>
+      <?php endif; ?>
+
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header">
+          <h3>🤱 Add New Babysitter</h3>
+        </div>
+        <div class="card-body">
+          <form method="POST" action="">
+            <input type="hidden" name="form_action" value="add_babysitter">
+
+            <div class="form-grid">
+              <div class="form-group <?= isset($bsErrors['name']) ? 'has-error' : '' ?>">
+                <label for="bs-name">Full Name</label>
+                <input type="text" id="bs-name" name="name" placeholder="e.g. Maria Cruz" value="<?= htmlspecialchars($bsFormData['name'] ?? '') ?>" required>
+                <?php if (isset($bsErrors['name'])): ?><span class="err-msg"><?= htmlspecialchars($bsErrors['name']) ?></span><?php endif; ?>
+              </div>
+
+              <div class="form-group <?= isset($bsErrors['email']) ? 'has-error' : '' ?>">
+                <label for="bs-email">Email Address</label>
+                <input type="email" id="bs-email" name="email" placeholder="sitter@mail.com" value="<?= htmlspecialchars($bsFormData['email'] ?? '') ?>" required>
+                <?php if (isset($bsErrors['email'])): ?><span class="err-msg"><?= htmlspecialchars($bsErrors['email']) ?></span><?php endif; ?>
+              </div>
+
+              <div class="form-group">
+                <label for="bs-phone">Phone Number</label>
+                <input type="tel" id="bs-phone" name="phone" placeholder="+63 912 345 6789" value="<?= htmlspecialchars($bsFormData['phone'] ?? '') ?>">
+              </div>
+
+              <div class="form-group <?= isset($bsErrors['password']) ? 'has-error' : '' ?>">
+                <label for="bs-password">Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="bs-password" name="password" placeholder="Min. 8 characters" required>
+                  <button type="button" class="eye-btn" onclick="togglePw('bs-password', this)">👁</button>
+                </div>
+                <?php if (isset($bsErrors['password'])): ?><span class="err-msg"><?= htmlspecialchars($bsErrors['password']) ?></span><?php endif; ?>
+              </div>
+
+              <div class="form-group <?= isset($bsErrors['confirm_password']) ? 'has-error' : '' ?>">
+                <label for="bs-confirm-password">Confirm Password</label>
+                <div class="pass-wrap">
+                  <input type="password" id="bs-confirm-password" name="confirm_password" placeholder="Repeat password" required>
+                  <button type="button" class="eye-btn" onclick="togglePw('bs-confirm-password', this)">👁</button>
+                </div>
+                <?php if (isset($bsErrors['confirm_password'])): ?><span class="err-msg"><?= htmlspecialchars($bsErrors['confirm_password']) ?></span><?php endif; ?>
+              </div>
+
+              <div class="form-group full">
+                <label for="bs-notes">Notes <span style="font-style:italic;text-transform:none">(optional)</span></label>
+                <textarea id="bs-notes" name="notes" placeholder="e.g. Available weekends, speaks English and Filipino..."><?= htmlspecialchars($bsFormData['notes'] ?? '') ?></textarea>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="reset" class="btn-secondary">Clear</button>
+              <button type="submit" class="btn-primary">Add Babysitter →</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>👥 Current Babysitters</h3>
+          <span style="font-size:0.8rem;color:var(--muted)"><?= count($babysitters) ?> account<?= count($babysitters) !== 1 ? 's' : '' ?></span>
+        </div>
+
+        <div class="card-body" style="padding:0;overflow-x:auto">
+          <?php if (empty($babysitters)): ?>
+            <div class="empty-state">
+              <div style="font-size:36px;margin-bottom:10px">🤱</div>
+              No babysitter accounts yet. Add one above!
+            </div>
+          <?php else: ?>
+            <table class="bs-table">
+              <thead>
+                <tr>
+                  <th style="padding-left:24px">Name</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Added</th>
+                  <th style="padding-right:24px"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($babysitters as $bs): ?>
+                  <?php
+                    $bsWords = preg_split('/\s+/', trim($bs['name']));
+                    $bsInitials = strtoupper(substr($bsWords[0] ?? 'B', 0, 1) . substr($bsWords[1] ?? '', 0, 1));
+                  ?>
+                  <tr>
+                    <td style="padding-left:24px">
+                      <span class="bs-avatar"><?= htmlspecialchars($bsInitials) ?></span>
+                      <span class="bs-name"><?= htmlspecialchars($bs['name']) ?></span>
+                    </td>
+                    <td style="color:var(--muted)"><?= htmlspecialchars($bs['email']) ?></td>
+                    <td><span class="badge-sitter">Babysitter</span></td>
+                    <td style="color:var(--muted)"><?= !empty($bs['created_at']) ? date('M j, Y', strtotime($bs['created_at'])) : '—' ?></td>
+                    <td style="padding-right:24px;text-align:right">
+                      <form method="POST" action="" onsubmit="return confirm('Remove this babysitter account?')">
+                        <input type="hidden" name="form_action" value="delete_babysitter">
+                        <input type="hidden" name="id" value="<?= (int)$bs['id'] ?>">
+                        <button type="submit" class="btn-delete">Remove</button>
+                      </form>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ SESSION LOGS SECTION ═══ -->
+<div class="section" id="sec-sessions">
+
+  <!-- Stats row -->
+  <div class="stats-grid" style="margin-bottom:20px">
+    <div class="stat-card">
+      <div class="stat-icon" style="background:#f0fdf4"><span style="color:#15803d;font-size:16px">●</span></div>
+      <h4><?= htmlspecialchars($sessionStats['active_count'] ?? 0) ?></h4>
+      <p>Active Sessions</p>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-icon" style="background:#f0f9ff"><span style="color:#0369a1;font-size:16px">#</span></div>
+      <h4><?= htmlspecialchars($sessionStats['total_count'] ?? 0) ?></h4>
+      <p>Total Sessions</p>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-icon" style="background:#f5f3ff"><span style="color:#7c3aed;font-size:16px">~</span></div>
+      <h4><?= !empty($sessionStats['avg_duration']) ? htmlspecialchars(substr($sessionStats['avg_duration'], 0, 5)) : '—' ?></h4>
+      <p>Avg. Duration</p>
+    </div>
+
+    <div class="stat-card">
+      <div class="stat-icon" style="background:#fff1f2"><span style="color:#be123c;font-size:16px">!</span></div>
+      <h4><?= htmlspecialchars($sessionStats['expired_count'] ?? 0) ?></h4>
+      <p>Expired</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <h3>Session Logs</h3>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="filter-session-status" onchange="filterSessions()" style="padding:6px 10px;border:1px solid var(--border);border-radius:8px;font-size:0.82rem;font-family:'DM Sans',sans-serif">
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="logged_out">Logged Out</option>
+          <option value="expired">Expired</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card-body" style="padding:0;overflow-x:auto">
+      <?php if (empty($sessionLogs)): ?>
+        <div style="padding:32px;text-align:center;color:var(--muted);font-size:0.9rem">No sessions recorded yet.</div>
+      <?php else: ?>
+
+      <table class="log-table" style="width:100%;table-layout:fixed">
+        <thead>
+          <tr>
+            <th style="padding-left:20px;width:140px">User</th>
+            <th style="width:140px">Login Time</th>
+            <th style="width:90px">Duration</th>
+            <th style="width:130px">IP Address</th>
+            <th style="width:180px">Device</th>
+            <th style="width:110px;padding-right:20px">Status</th>
+          </tr>
+        </thead>
+
+        <tbody id="sessions-tbody">
+        <?php foreach ($sessionLogs as $sl): ?>
+          <?php
+            $userName = $sl['user_name'] ?? 'Unknown User';
+            $initials = strtoupper(substr($userName, 0, 2));
+
+            $role = $sl['role'] ?? 'user';
+            $avatarBg = $role === 'admin'
+              ? 'linear-gradient(135deg,#f97316,#e85d04)'
+              : 'linear-gradient(135deg,#8b5cf6,#6d28d9)';
+
+            $status = $sl['status'] ?? 'unknown';
+
+            if ($status === 'active') {
+                $statusLabel = 'Active';
+                $statusKey = 'active';
+            } elseif ($status === 'logged_out') {
+                $statusLabel = 'Logged Out';
+                $statusKey = 'logged_out';
+            } elseif ($status === 'expired') {
+                $statusLabel = 'Expired';
+                $statusKey = 'expired';
+            } else {
+                $statusLabel = 'Unknown';
+                $statusKey = 'unknown';
+            }
+
+            $durationSec = 0;
+            if (!empty($sl['logged_in_at'])) {
+                if (!empty($sl['logged_out_at'])) {
+                    $durationSec = strtotime($sl['logged_out_at']) - strtotime($sl['logged_in_at']);
+                } else {
+                    $durationSec = time() - strtotime($sl['logged_in_at']);
+                }
+            }
+            $durationSec = max(0, $durationSec);
+
+            if ($status === 'active') {
+                $durationStr = '<span style="color:#22c55e;font-weight:500">Active</span>';
+            } else {
+                $hours = floor($durationSec / 3600);
+                $minutes = floor(($durationSec % 3600) / 60);
+                $durationStr = $hours . 'h ' . $minutes . 'm';
+            }
+
+            $statusBgMap = [
+                'active' => '#f0fdf4',
+                'logged_out' => '#f5f3ff',
+                'expired' => '#fff1f2',
+                'unknown' => '#f9fafb'
+            ];
+
+            $statusClMap = [
+                'active' => '#15803d',
+                'logged_out' => '#6d28d9',
+                'expired' => '#be123c',
+                'unknown' => '#6b7280'
+            ];
+
+            $statusBg = $statusBgMap[$statusKey] ?? '#f9fafb';
+            $statusCl = $statusClMap[$statusKey] ?? '#6b7280';
+
+            $ipAddress = $sl['ip_address'] ?? 'Unknown';
+            $rawDevice = $sl['device'] ?? 'Browser / Unknown';
+
+            $deviceType = stripos($rawDevice, 'mobile') !== false ? 'M' : 'D';
+            $deviceLabel = 'Browser / Unknown';
+
+            if (stripos($rawDevice, 'Edg') !== false || stripos($rawDevice, 'Edge') !== false) {
+                $deviceLabel = 'Microsoft Edge';
+            } elseif (stripos($rawDevice, 'Chrome') !== false) {
+                $deviceLabel = 'Chrome Browser';
+            } elseif (stripos($rawDevice, 'Firefox') !== false) {
+                $deviceLabel = 'Firefox Browser';
+            } elseif (stripos($rawDevice, 'Safari') !== false) {
+                $deviceLabel = 'Safari Browser';
+            }
+
+            $devTypeBg = $deviceType === 'M' ? '#fce7f3' : '#e0f2fe';
+            $devTypeCl = $deviceType === 'M' ? '#9d174d' : '#0369a1';
+          ?>
+
+          <tr data-status="<?= htmlspecialchars($status) ?>">
+            <td style="padding-left:20px">
+              <div style="display:flex;align-items:center;gap:8px">
+                <div style="width:26px;height:26px;border-radius:50%;background:<?= $avatarBg ?>;display:flex;align-items:center;justify-content:center;font-size:0.65rem;font-weight:600;color:white;flex-shrink:0">
+                  <?= htmlspecialchars($initials) ?>
+                </div>
+                <span style="font-size:0.83rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                  <?= htmlspecialchars($userName) ?>
+                </span>
+              </div>
+            </td>
+
+            <td style="font-size:0.8rem;color:var(--muted)">
+              <?= !empty($sl['logged_in_at']) ? date('M j, g:ia', strtotime($sl['logged_in_at'])) : 'Unknown' ?>
+            </td>
+
+            <td style="font-size:0.82rem"><?= $durationStr ?></td>
+
+            <td style="font-size:0.78rem;color:var(--muted)">
+              <?= htmlspecialchars($ipAddress) ?>
+            </td>
+
+            <td style="font-size:0.8rem">
+              <span style="display:inline-flex;align-items:center;gap:5px">
+                <span style="background:<?= $devTypeBg ?>;color:<?= $devTypeCl ?>;border-radius:5px;padding:1px 6px;font-size:0.7rem;font-weight:600">
+                  <?= htmlspecialchars($deviceType) ?>
+                </span>
+                <?= htmlspecialchars($deviceLabel) ?>
+              </span>
+            </td>
+
+            <td style="padding-right:20px">
+              <span style="background:<?= $statusBg ?>;color:<?= $statusCl ?>;padding:3px 10px;border-radius:10px;font-size:0.72rem;font-weight:500">
+                <?= htmlspecialchars($statusLabel) ?>
+              </span>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+      <?php endif; ?>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ ANALYTICS SECTION ═══ -->
     <div class="section" id="sec-analytics">
       <div class="grid-2">
         <div class="card">
@@ -952,15 +1440,28 @@ nav { flex: 1; padding: 16px 0; overflow-y: auto; }
 <!-- Toast Container -->
 <div id="toast-container"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js">
+function togglePw(id, btn) {
+  const inp = document.getElementById(id);
+  if (!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  btn.style.opacity = inp.type === 'text' ? '1' : '0.5';
+}
+
+</script>
 <script>
 // ═══════════════════════════════════════
 // Navigation
 // ═══════════════════════════════════════
 const sectionTitles = {
-  dashboard: 'Dashboard', monitor: 'Live Monitor',
-  logs: 'Activity Logs', analytics: 'Analytics & Insights',
-  profile: 'Baby Profile', settings: 'Notifications'
+  dashboard: 'Dashboard',
+  monitor: 'Live Monitor',
+  logs: 'Activity Logs',
+  analytics: 'Analytics & Insights',
+  profile: 'Baby Profile',
+  settings: 'Notifications',
+  babysitters: 'Manage Baby Sitter',
+  sessions: 'Session Logs'
 };
 function showSection(name) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -1250,6 +1751,20 @@ setInterval(() => {
       }
     }).catch(() => {}); 
 }, 10000);
+function filterSessions() {
+    const status = document.getElementById('filter-session-status').value;
+    document.querySelectorAll('#sessions-tbody tr').forEach(row => {
+        row.style.display = (!status || row.dataset.status === status) ? '' : 'none';
+    });
+}
+
+function togglePw(id, btn) {
+  const inp = document.getElementById(id);
+  if (!inp) return;
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  btn.style.opacity = inp.type === 'text' ? '1' : '0.5';
+}
+
 </script>
 </body>
 </html>

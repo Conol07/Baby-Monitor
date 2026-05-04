@@ -2,23 +2,22 @@
 // ============================================================
 // config.php — Database & App Configuration
 // ============================================================
+
 define('DB_HOST', 'localhost');
 define('DB_USER', 'root');
 define('DB_PASS', '');
 define('DB_NAME', 'baby_monitor');
+
 define('APP_NAME', 'BabyWatch');
 define('APP_VERSION', '1.0.0');
-define('APP_URL', 'http://localhost/baby-monitor');
-define('SESSION_LIFETIME', 3600 * 8); // 8 hours
+define('APP_URL', 'http://localhost/Baby-Monitor');
+define('SESSION_LIFETIME', 3600 * 8);
 
-// Timezone
 date_default_timezone_set('Asia/Manila');
 
-// Error reporting (set to 0 in production)
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-// Start session if not already started
 if (session_status() === PHP_SESSION_NONE) {
     session_set_cookie_params([
         'lifetime' => SESSION_LIFETIME,
@@ -31,22 +30,26 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 // ============================================================
-// Database Connection (PDO)
+// Database Connection
 // ============================================================
 function getDB(): PDO {
     static $pdo = null;
+
     if ($pdo === null) {
         try {
             $dsn = "mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4";
+
             $pdo = new PDO($dsn, DB_USER, DB_PASS, [
                 PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES   => false,
             ]);
+
         } catch (PDOException $e) {
-            die(json_encode(['error' => 'Database connection failed: ' . $e->getMessage()]));
+            die('Database connection failed: ' . $e->getMessage());
         }
     }
+
     return $pdo;
 }
 
@@ -66,7 +69,8 @@ function requireLogin(): void {
 
 function requireAdmin(): void {
     requireLogin();
-    if ($_SESSION['user_role'] !== 'admin') {
+
+    if (($_SESSION['user_role'] ?? '') !== 'admin') {
         header('Location: ' . APP_URL . '/babysitter/dashboard.php');
         exit;
     }
@@ -74,15 +78,19 @@ function requireAdmin(): void {
 
 function currentUser(): array {
     if (!isLoggedIn()) return [];
+
     $db = getDB();
+
     $stmt = $db->prepare("SELECT id, name, email, role FROM users WHERE id = ?");
     $stmt->execute([$_SESSION['user_id']]);
+
     return $stmt->fetch() ?: [];
 }
 
 function logout(): void {
     $_SESSION = [];
     session_destroy();
+
     header('Location: ' . APP_URL . '/index.php?msg=logged_out');
     exit;
 }
@@ -94,9 +102,11 @@ function timeAgo(string $datetime): string {
     $now  = new DateTime();
     $past = new DateTime($datetime);
     $diff = $now->diff($past);
-    if ($diff->days > 0)      return $diff->days . 'd ago';
-    if ($diff->h > 0)         return $diff->h . 'h ago';
-    if ($diff->i > 0)         return $diff->i . 'm ago';
+
+    if ($diff->days > 0) return $diff->days . 'd ago';
+    if ($diff->h > 0) return $diff->h . 'h ago';
+    if ($diff->i > 0) return $diff->i . 'm ago';
+
     return 'Just now';
 }
 
@@ -131,4 +141,4 @@ function jsonResponse(array $data, int $code = 200): void {
 
 function sanitize(string $input): string {
     return htmlspecialchars(strip_tags(trim($input)), ENT_QUOTES, 'UTF-8');
-}
+};
